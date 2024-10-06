@@ -275,6 +275,9 @@ def mid_term_scheduling(config, TimeStep=None, mts_plot=None):
 
     # replace all 1.000000e+300 values by nan since they correspond to undefined in GAMS:
     profiles[profiles >= 1E300] = np.nan
+    for storagereservoir in SimData['sets']['au']:
+        if SimData['parameters']['StorageHours']['val'][SimData['sets']['au'].index(storagereservoir)] <= 8:
+           profiles[storagereservoir.split(' - ')[1].strip()] = 0
     if config['H2FlexibleDemand'] != '':
         PtLDemand[PtLDemand >= 1E300] = np.nan
 

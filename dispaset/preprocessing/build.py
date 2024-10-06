@@ -162,7 +162,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     # If not present, add the non-compulsory fields to the units table:
     for key in ['CHPPowerLossFactor', 'CHPPowerToHeat', 'CHPType', 'STOCapacity', 'STOSelfDischarge',
                 'STOMaxChargingPower', 'STOChargingEfficiency', 'CHPMaxHeat', 'WaterWithdrawal',
-                'WaterConsumption']:
+                'WaterConsumption', 'STOHours']:
         if key not in plants.columns:
             plants[key] = np.nan
 
@@ -228,6 +228,9 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     StorageAlertLevels = UnitBasedTable(plants_all_sto, 'StorageAlertLevels', config,
                                         fallbacks=['Unit', 'Technology', 'Zone'],
                                         default=0)
+    StorageFloodControl = UnitBasedTable(plants_all_sto, 'StorageFloodControl', config,
+                                        fallbacks=['Unit', 'Technology', 'Zone'],
+                                        default=1)
     ReservoirScaledInflows = UnitBasedTable(plants_all_sto, 'ReservoirScaledInflows', config,
                                             fallbacks=['Unit', 'Technology', 'Zone'], default=0)
     CostSpillage = UnitBasedTable(plants_all_sto, 'PriceOfSpillage', config,
@@ -301,10 +304,40 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     # Fuel prices:
     fuels = ['PriceOfNuclear', 'PriceOfBlackCoal', 'PriceOfGas', 'PriceOfFuelOil', 'PriceOfBiomass', 'PriceOfCO2',
              'PriceOfLignite', 'PriceOfPeat', 'PriceOfAmmonia']
+    FuelEntries = {'BIO': 'PriceOfBiomass', 'GAS': 'PriceOfGas', 'HRD': 'PriceOfBlackCoal', 'LIG': 'PriceOfLignite',
+                   'NUC': 'PriceOfNuclear', 'OIL': 'PriceOfFuelOil', 'PEA': 'PriceOfPeat', 'AMO': 'PriceOfAmmonia'}
     FuelPrices = {}
     for fuel in fuels:
-        FuelPrices[fuel] = NodeBasedTable(fuel, config, default=config['default'][fuel])
-
+        fp = pd.DataFrame()
+        loc = plants['Zone']
+        ft = plants['Fuel']
+        if os.path.isfile(config[fuel]):
+            fp = pd.read_csv(config[fuel], index_col=0,
+                             na_values=commons['na_values'],
+                             keep_default_na=False)
+            fp.index = pd.to_datetime(fp.index).tz_localize(None)
+            if set(fp.columns).issubset(plants['Unit']):
+                FuelPrices[fuel] = UnitBasedTable(plants, fuel, config, fallbacks=['Unit', 'Technology'])
+            else:
+                key = [key for key, val in FuelEntries.items() if val == fuel][0]
+                FuelPrices[fuel] = pd.DataFrame(index=config['idx_long'])
+                for unit, zone in loc.items():
+                    if ft[unit] == key:
+                        if zone in fp.columns:
+                            FuelPrices[fuel][unit] = fp[zone]
+                FuelPrices[fuel] = FuelPrices[fuel].loc[config['idx_long']]
+        else:
+            if config['default'][fuel] == 0:
+                FuelPrices[fuel] = UnitBasedTable(plants, fuel, config, default=config['default'][fuel])
+            else:
+                FuelPrices[fuel] = pd.DataFrame(index=config['idx_long'])
+                key = [key for key, val in FuelEntries.items() if val == fuel][0]
+                for unit in ft.index:
+                    if ft[unit] == key:
+                        FuelPrices[fuel][unit] = config['default'][fuel]
+    for unit_name, price in FuelPrices.items():
+        missing_columns = list(set(plants['Unit']) - set(price.columns))
+        price[missing_columns] = 0
     # Interconnections:
     [Interconnections_sim, Interconnections_RoW, Interconnections] = interconnections(config['zones'], NTC, flows)
 
@@ -336,6 +369,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
                                   'MinDownTime': 'TimeDownMinimum',
                                   'RampingCost': 'CostRampUp',
                                   'STOCapacity': 'StorageCapacity',
+                                  'STOHours': 'StorageHours',
                                   'STOMaxChargingPower': 'StorageChargingCapacity',
                                   'STOChargingEfficiency': 'StorageChargingEfficiency',
                                   'STOSelfDischarge': 'StorageSelfDischarge',
@@ -374,6 +408,8 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
                 Plants_merged.loc[u, 'PowerCapacity'] = Plants_merged.loc[u, 'PowerCapacity'] * config['modifiers'][
                     'Storage']
                 Plants_merged.loc[u, 'StorageCapacity'] = Plants_merged.loc[u, 'StorageCapacity'] * config['modifiers'][
+                    'Storage']
+                Plants_merged.loc[u, 'StorageHours'] = Plants_merged.loc[u, 'StorageHours'] * config['modifiers'][
                     'Storage']
                 Plants_merged.loc[u, 'StorageChargingCapacity'] = Plants_merged.loc[u, 'StorageChargingCapacity'] * \
                                                                   config['modifiers']['Storage']
@@ -476,7 +512,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
                'Efficiencies': Efficiencies, 'NTCs': NTCs, 'Inter_RoW': Inter_RoW,
                'LoadShedding': LoadShedding, 'CostLoadShedding': CostLoadShedding, 'CostCurtailment': CostCurtailment,
                'ScaledInflows': ReservoirScaledInflows, 'ReservoirLevels': ReservoirLevels,
-               'StorageAlertLevels': StorageAlertLevels, 'CostSpillage': CostSpillage,
+               'StorageAlertLevels': StorageAlertLevels,'StorageFloodControl': StorageFloodControl, 'CostSpillage': CostSpillage,
                'Outages': Outages, 'AvailabilityFactors': AF, 'CostHeatSlack': CostHeatSlack,
                'HeatDemand': HeatDemand, 'ShareOfFlexibleDemand': ShareOfFlexibleDemand,
                'PriceTransmission': PriceTransmission, 'CostH2Slack': CostH2Slack,
@@ -492,7 +528,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     # for key in ['H2RigidDemand', 'H2FlexibleDemand']:
     #     finalTS[key] = merge_series(Plants_merged, plants, finalTS[key], tablename=key, method='Sum')
     # Merge the following time series by weighted average based on storage capacity
-    for key in ['ReservoirLevels', 'StorageAlertLevels', 'CostSpillage']:
+    for key in ['ReservoirLevels', 'StorageAlertLevels', 'StorageFloodControl', 'CostSpillage']:
         finalTS[key] = merge_series(Plants_merged, plants, finalTS[key], tablename=key, method='StorageWeightedAverage')
 
     # Check that all times series data is available with the specified data time step:
@@ -569,6 +605,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     sets_param['CostVariable'] = ['au', 'h']
     sets_param['CostSpillage'] = ['asu', 'h']
     sets_param['CostStorageAlert'] = ['au', 'h']
+    sets_param['CostFloodControl'] = ['au', 'h']
     sets_param['Curtailment'] = ['n']
     sets_param['CostCurtailment'] = ['n', 'h']
     sets_param['Demand'] = ['mk', 'n', 'h']
@@ -598,6 +635,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     sets_param['Reserve'] = [
         'au']  # changed this also in the gams file(in the definition and in the equations satifying the reserve demand)
     sets_param['StorageCapacity'] = ['au']
+    sets_param['StorageHours'] = ['au']
     sets_param['StorageChargingCapacity'] = ['au']
     sets_param['StorageChargingEfficiency'] = ['au']
     sets_param['StorageDischargeEfficiency'] = ['asu']
@@ -606,6 +644,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     sets_param['StorageInitial'] = ['asu']
     sets_param['StorageMinimum'] = ['asu']
     sets_param['StorageAlertLevel'] = ['asu', 'h']
+    sets_param['StorageFloodControl'] = ['asu', 'h']
     sets_param['StorageOutflow'] = ['s', 'h']
     sets_param['StorageProfile'] = ['asu', 'h']
     sets_param['Technology'] = ['au', 't']
@@ -636,7 +675,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     # %%
     # List of parameters whose value is known, and provided in the dataframe Plants_merged.
     for var in ['PowerCapacity', 'PartLoadMin', 'TimeUpMinimum', 'TimeDownMinimum', 'CostStartUp',
-                'CostRampUp', 'StorageCapacity', 'StorageSelfDischarge', 'StorageChargingCapacity']:
+                'CostRampUp', 'StorageCapacity', 'StorageHours', 'StorageSelfDischarge', 'StorageChargingCapacity']:
         parameters[var]['val'] = Plants_merged[var].values
 
     # List of parameters whose value is not necessarily specified in the dataframe Plants_merged
@@ -687,6 +726,7 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
         # Setting the storage alert levels
         if s in Plants_all_sto.index:
             parameters['StorageAlertLevel']['val'][i, :] = finalTS['StorageAlertLevels'][s][idx_sim].values
+            parameters['StorageFloodControl']['val'][i, :] = finalTS['StorageFloodControl'][s][idx_sim].values
             parameters['CostSpillage']['val'][i, :] = finalTS['CostSpillage'][s][idx_sim].values
 
         # The initial level is the same as the first value of the profile:
@@ -776,11 +816,12 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     # %%###############################################################################################################
     # Variable Cost
     # Equivalence dictionary between fuel types and price entries in the config sheet:
-    FuelEntries = {'BIO': 'PriceOfBiomass', 'GAS': 'PriceOfGas', 'HRD': 'PriceOfBlackCoal', 'LIG': 'PriceOfLignite',
-                   'NUC': 'PriceOfNuclear', 'OIL': 'PriceOfFuelOil', 'PEA': 'PriceOfPeat', 'AMO': 'PriceOfAmmonia'}
+    # FuelEntries = {'BIO': 'PriceOfBiomass', 'GAS': 'PriceOfGas', 'HRD': 'PriceOfBlackCoal', 'LIG': 'PriceOfLignite',
+    #                'NUC': 'PriceOfNuclear', 'OIL': 'PriceOfFuelOil', 'PEA': 'PriceOfPeat', 'AMO': 'PriceOfAmmonia'}
     CostVariable = pd.DataFrame()
     for unit in range(Nunits):
-        c = Plants_merged['Zone'][unit]  # zone to which the unit belongs
+        c = Plants_merged['Unit'][unit].split('-')[-1].strip()  # zone to which the unit belongs
+        # en el valor de c tendrian que estar las unidades de plantmerge
         found = False
         for FuelEntry in FuelEntries:
             CostVariable = pd.concat([
@@ -798,12 +839,12 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
                                                                  Plants_merged['Efficiency'][unit] + \
                                                                  Plants_merged['EmissionRate'][unit] * \
                                                                  FuelPrices['PriceOfCO2'][c]
-                    found = True
+                found = True
         # Special case for biomass plants, which are not included in EU ETS:
         if Plants_merged['Fuel'][unit] == 'BIO':
             parameters['CostVariable']['val'][unit, :] = FuelPrices['PriceOfBiomass'][c] / \
                                                          Plants_merged['Efficiency'][unit]
-            found = True
+            # found = True
         if not found:
             logging.warning('No fuel price value has been found for fuel ' + Plants_merged['Fuel'][unit] +
                             ' in unit ' + Plants_merged['Unit'][unit] + '. A null variable cost has been assigned')
@@ -811,17 +852,24 @@ def build_single_run(config, profiles=None, PtLDemand=None, MTS=0):
     # %%###############################################################################################################
     # Assign storage alert level costs to the unit with highest variable costs inside the zone
     CostVariable = CostVariable.groupby(by=CostVariable.columns, axis=1).apply(
-        lambda g: g.mean(axis=1) if isinstance(g.iloc[0, 0], numbers.Number) else g.iloc[:, 0]) * 1.1
+        lambda g: g.max(axis=1) if isinstance(g.iloc[0, 0], numbers.Number) else g.iloc[:, 0]) * 1.1
+    unit_to_zone = dict(zip(Plants_merged['Unit'].apply(lambda x: x.split('-')[-1].strip()), Plants_merged['Zone']))
+    MaxCostVariable = CostVariable.groupby(unit_to_zone, axis=1).max()
     for unit in range(Nunits):
         c = Plants_merged['Zone'][unit]  # zone to which the unit belongs
         found = False
         if Plants_merged['Unit'][unit] in Plants_all_sto['Unit']:
-            parameters['CostStorageAlert']['val'][unit, :] = CostVariable[c].values
+            parameters['CostStorageAlert']['val'][unit, :] = MaxCostVariable[c].values
             found = True
         if not found:
             logging.warning('No alert price has been found for ' + Plants_merged['Unit'][unit] +
                             '. A null variable cost has been assigned')
-
+        if Plants_merged['Unit'][unit] in Plants_all_sto['Unit']:
+            parameters['CostFloodControl']['val'][unit, :] = MaxCostVariable[c].values
+            found = True
+        if not found:
+            logging.warning('No flood price has been found for ' + Plants_merged['Unit'][unit] +
+                            '. A null variable cost has been assigned')
     # Maximum Line Capacity
     for i, l in enumerate(sets['l']):
         if l in NTCs.columns:

@@ -117,6 +117,7 @@ CostVariable(au,h)               [EUR\MW]        Variable costs
 CostSpillage(au,h)               [EUR\MW]        Cost of spillage for each unit
 CostWaterValue(au,h)             [EUR\MW]        Cost of storage level violation for each unit
 CostStorageAlert(au,h)           [EUR\MW]        Cost of violating storage alert level
+CostFloodControl(au,h)           [EUR\MW]        Cost of violating storage flood level
 CostHeatSlack(n_th,h)            [EUR\MWh]       Cost of supplying heat via other means
 CostH2Slack(n_h2,h)              [EUR\MWh]       Cost of supplying H2 by other means
 H2Demand(n_h2,h)                 [MW]            H2 rigid demand
@@ -170,6 +171,8 @@ Nunits(au)                       [n.a.]          Number of units inside the clus
 K_QuickStart(n)                  [n.a.]          Part of the reserve that can be provided by offline quickstart units
 QuickStartPower(au,h)            [MW\h\u]        Available max capacity in tertiary regulation up from fast-starting power plants - TC formulation
 StorageAlertLevel(au,h)          [MWh]           Storage alert - Will only be violated to avoid power rationing
+StorageFloodControl(au,h)        [MWh]           Storage flood control
+StorageHours(au)                 [h]             Storage hours
 ;
 
 *Parameters as used within the loop
@@ -235,6 +238,7 @@ $LOAD CostStartUp
 $LOAD CostVariable
 $LOAD CostSpillage
 $LOAD CostStorageAlert
+$LOAD CostFloodControl
 $LOAD Curtailment
 $LOAD CostCurtailment
 $LOAD Demand
@@ -272,6 +276,8 @@ $LOAD StorageInitial
 $LOAD StorageProfile
 $LOAD StorageMinimum
 $LOAD StorageAlertLevel
+$LOAD StorageFloodControl
+$LOAD StorageHours
 $LOAD StorageOutflow
 $LOAD Technology
 $LOAD TimeDownMinimum
@@ -321,6 +327,7 @@ CostRampUp,
 CostVariable,
 CostSpillage,
 CostStorageAlert,
+CostFloodControl,
 Demand,
 StorageDischargeEfficiency,
 Efficiency,
@@ -356,6 +363,8 @@ StorageInitial,
 StorageProfile,
 StorageMinimum,
 StorageAlertLevel,
+StorageFloodControl,
+StorageHours,
 StorageOutflow,
 Technology,
 TimeDownMinimum,
@@ -409,6 +418,7 @@ LL_2U(n,h)                 [MW]    Deficit in reserve up
 LL_3U(n,h)                 [MW]    Deficit in reserve up - non spinning
 LL_2D(n,h)                 [MW]    Deficit in reserve down
 LL_StorageAlert(au,h)       [MWh]   Unsatisfied water level constraint for going below alert level at each hour
+LL_FloodControl(au,h)       [MWh]   Unsatisfied water level constraint for going above flood level at each hour
 spillage(au,h)              [MWh]   spillage from water reservoirs
 SystemCost(h)              [EUR]   Hourly system cost
 Reserve_2U(au,h)           [MW]    Spinning reserve up
@@ -525,11 +535,13 @@ EQ_2D_limit_chp
 EQ_3U_limit_chp
 EQ_Storage_minimum
 EQ_Storage_alert
+EQ_Storage_flood_control
 EQ_Storage_level
 EQ_Storage_input
 EQ_Storage_MaxDischarge
 EQ_Storage_MaxCharge
 EQ_Storage_balance
+EQ_Storage_Cyclic
 *EQ_H2_demand
 EQ_Storage_boundaries
 EQ_SystemCost
@@ -580,6 +592,7 @@ EQ_SystemCost(i)..
          +0.8*Config("ValueOfLostLoad","val")*(sum(n,(LL_2U(n,i)+LL_2D(n,i)+LL_3U(n,i))*TimeStep))
          +0.7*Config("ValueOfLostLoad","val")*sum(u,(LL_RampUp(u,i)+LL_RampDown(u,i))*TimeStep)
          +sum(s,CostStorageAlert(s,i)*LL_StorageAlert(s,i)*TimeStep)
+         +sum(s,CostFloodControl(s,i)*LL_FloodControl(s,i)*TimeStep)
 *         +Config("CostOfSpillage","val")*sum(au,spillage(au,i))
          +sum(au,CostSpillage(au,i)*spillage(au,i))
          +sum(n,CurtailedPower(n,i) * CostCurtailment(n,i) * TimeStep)
@@ -604,6 +617,7 @@ EQ_SystemCost(i)..
          +0.8*Config("ValueOfLostLoad","val")*(sum(n,(LL_2U(n,i)+LL_2D(n,i)+LL_3U(n,i))*TimeStep))
          +0.7*Config("ValueOfLostLoad","val")*sum(u,(LL_RampUp(u,i)+LL_RampDown(u,i))*TimeStep)
          +sum(s,CostStorageAlert(s,i)*LL_StorageAlert(s,i)*TimeStep)
+         +sum(s,CostFloodControl(s,i)*LL_FloodControl(s,i)*TimeStep)
 *         +Config("CostOfSpillage","val")*sum(au,spillage(au,i))
          +sum(au,CostSpillage(au,i)*spillage(au,i))
          +sum(n,CurtailedPower(n,i) * CostCurtailment(n,i) * TimeStep)
@@ -912,6 +926,12 @@ EQ_Storage_alert(s,i)..
          StorageLevel(s,i)
          + LL_StorageAlert(s,i)
 ;
+EQ_Storage_flood_control(s,i)$(StorageFloodControl(s,i) > StorageAlertLevel(s,i))..
+         StorageCapacity(s)*Nunits(s)*StorageFloodControl(s,i)
+         + LL_FloodControl(s,i)
+         =G=
+         StorageLevel(s,i)
+;
 
 *Storage level must be below storage capacity
 EQ_Storage_level(au,i)..
@@ -971,6 +991,12 @@ EQ_Storage_boundaries(au,i)$(ord(i) = card(i))..
          =L=
          StorageLevel(au,i)$(s(au) or p2h2(au))
          + WaterSlack(au)$(s(au) or p2h2(au))
+;
+
+EQ_Storage_Cyclic(au)$(StorageHours(au)>=8)..
+         StorageFinalMin(au)
+         =E=
+         StorageInitial(au)
 ;
 
 *Total emissions are capped
@@ -1232,9 +1258,11 @@ EQ_2D_limit_chp,
 EQ_3U_limit_chp,
 EQ_Storage_minimum,
 EQ_Storage_alert,
+EQ_Storage_flood_control,
 EQ_Storage_level,
 EQ_Storage_input,
 EQ_Storage_balance,
+$If %MTS% == 1 EQ_Storage_Cyclic,
 EQ_Storage_boundaries,
 *EQ_H2_demand,
 EQ_Storage_MaxCharge,
@@ -1395,6 +1423,7 @@ LostLoad_2D(n,h)
 LostLoad_2U(n,h)
 LostLoad_3U(n,h)
 LostLoad_StorageAlert(au,h)
+LostLoad_FloodControl(au,h)
 $If %MTS%==0 LostLoad_RampUp(n,h)
 $If %MTS%==0 LostLoad_RampDown(n,h)
 $If %MTS%==0 LostLoad_RampUp_Unit(au,z)
@@ -1484,6 +1513,7 @@ LostLoad_2D(n,z) = LL_2D.L(n,z);
 LostLoad_2U(n,z) = LL_2U.L(n,z);
 LostLoad_3U(n,z) = LL_3U.L(n,z);
 LostLoad_StorageAlert(au,z) = LL_StorageAlert.L(au,z);
+LostLoad_FloodControl(au,z) = LL_FloodControl.L(au,z);
 $If %MTS%==0 LostLoad_RampUp(n,z)    = sum(u,LL_RampUp.L(u,z)*Location(u,n));
 $If %MTS%==0 LostLoad_RampDown(n,z)  = sum(u,LL_RampDown.L(u,z)*Location(u,n));
 $If %MTS%==0 LostLoad_RampUp_Unit(u,z) = LL_RampUp.L(u,z);
@@ -1581,6 +1611,7 @@ LostLoad_2D,
 LostLoad_2U,
 LostLoad_3U,
 LostLoad_StorageAlert,
+LostLoad_FloodControl,
 $If %MTS%==0 LostLoad_RampUp,
 $If %MTS%==0 LostLoad_RampDown,
 $If %MTS%==0 LostLoad_RampUp_Unit,
@@ -1638,7 +1669,7 @@ UnitHourlyProfit
 ;
 
 display OutputPowerConsumption, heat.L, heatslack.L, powerconsumption.L, power.L;
-
+$If %MTS% == 1 display OutputPowerConsumption, heat.L, powerconsumption.L, power.L, EQ_Storage_Cyclic.L;
 $onorder
 * Exit here if the PrintResult option is set to 0:
 $if not %PrintResults%==1 $exit
